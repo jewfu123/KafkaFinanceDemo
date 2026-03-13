@@ -1,0 +1,200 @@
+一、 如何捕捉“消失”的 Bean 构建错误
+在 Spring 框架中，如果 Bean 构建失败导致启动崩溃，日志通常会被打印在 System.err 或者被某些底层的 NoClassDefFoundError 掩盖。
+
+1. 调整日志等级（最简单有效）
+很多时候，具体的错误原因被隐藏在了 DEBUG 级别中。在 src/main/resources/logback.xml 或 application.properties 中临时开启：
+
+Properties
+# 开启 Spring 核心启动日志
+logging.level.org.springframework=DEBUG
+# 开启 Bean 实例化相关的日志
+logging.level.org.springframework.beans.factory=DEBUG
+2. 捕捉启动初期的异常（代码层面）
+如果应用在启动时闪退，可以在 main 方法中使用 try-catch 强行把堆栈打印出来：
+
+Java
+public static void main(String[] args) {
+    try {
+        SpringApplication.run(YourApplication.class, args);
+    } catch (Throwable e) {
+        e.printStackTrace(); // 强制打印到控制台，不依赖日志框架
+        throw e;
+    }
+}
+3. 使用 FailureAnalysisReporter
+Spring Boot 提供了一个接口叫 FailureAnalyzer。你可以搜一下代码里有没有自定义的分析器，或者干脆看控制台输出中是否有 "APPLICATION FAILED TO START" 后面跟着的表格，那通常是 Spring 自动整理的 Bean 依赖矛盾报告。
+
+二、 Kafka 排查实战：为何只有 errorChannel？
+你看到的 errorChannel 是 Spring Integration 的标准处理机制。当 Kafka 生产者发送失败或者消费者报错时，它会把异常丢进这个公共频道。
+
+1. 怀疑 Bean 构建失败？
+如果 Kafka 的相关 Bean（如 KafkaTemplate 或 Listener）没构建好，通常是因为：
+
+配置缺失：spring.kafka.bootstrap-servers 地址写错。
+
+序列化冲突：你提到的“电文转 Java”，如果对应的 Serializer 类没被定义为 Bean，Kafka 客户端会初始化失败。
+
+2. 实战技巧：看底层连接
+在控制台输入以下命令，确认你的应用是否真的连上了 Kafka：
+
+Bash
+# 查看与 9092 端口（Kafka默认）的连接状态
+netstat -an | grep 9092
+三、 本地分步执行 Kafka 测试的建议
+既然你有本地环境（Zookeeper + Kafka），手工分步执行是理清“电文 -> Java -> Kafka -> DB”链路的最佳方式。
+
+步骤 1：手动监控 Topic（观察者视角）
+不要只看你的 Java 日志。打开一个独立的终端，运行 Kafka 自带的消费者脚本，实时盯着 Topic 里的电文：
+
+Bash
+# 进入 Kafka 的 bin 目录
+./kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic 你的Topic名 --from-beginning
+技巧：当你打键发送电文时，如果这个终端没反应，说明“电文 -> Java”这一步就挂了；如果有反应但数据库没变，说明“Kafka -> 消费者 -> DB”这一步挂了。
+
+步骤 2：手动模拟发送（模拟打键）
+如果你的 Java 代码跑不通，你可以跳过代码，直接手动往 Topic 塞一条原始电文：
+
+Bash
+./kafka-console-producer.sh --bootstrap-server localhost:9092 --topic 你的Topic名
+# 然后直接粘贴你的固定格式电文字符串，回车
+技巧：如果手动塞电文数据库变了，说明你的消费端代码（Consumer）是好的，问题在生产端（Producer）。
+
+步骤 3：利用 Zookeeper 查看状态
+Kafka 的元数据在 Zookeeper 里。如果怀疑 Kafka 挂了：
+
+Bash
+./zookeeper-shell.sh localhost:2181 ls /brokers/ids
+如果返回空，说明 Kafka Broker 根本没注册成功。
+
+四、 针对日本金融项目的特别建议
+检查 sh 脚本里的环境变量：很多报错是因为本地 sh 执行时，没加载到关键的 .profile。建议在 sh 脚本开头加上 env > env_check.txt，看看路径是不是你以为的那样。
+
+iBatis 的日志开启：iBatis 默认不打印 SQL。要在本地看到发送给 PSQL 的具体语句，需配置：
+
+XML
+<logger name="java.sql.Connection" level="DEBUG" />
+<logger name="java.sql.PreparedStatement" level="DEBUG" />
+💡 我的建议：
+既然你现在有本地环境，不要直接跑整个自动化工具。
+
+先手动启动 Zookeeper/Kafka。
+
+手动用脚本发一条电文。
+
+盯着 netstat 和 kafka-console-consumer。
+
+这种“断点式”的手工排查，比看那堆写得乱七八糟的日志要快得多。
+
+---------------------------------
+
+既然你打算通过“手工分步”的方式来理清项目链路，这两个脚本将是你非常有力的辅助工具。
+
+1. Kafka 环境自检脚本 (check_kafka.sh)
+这个脚本可以帮你快速确认 Zookeeper 和 Kafka 是否正常启动，以及 Topic 是否存在。请根据你本地 Kafka 的实际安装路径修改第一行的 KAFKA_HOME。
+
+Bash
+#!/bin/bash
+
+# --- 配置项：请修改为你的 Kafka 实际路径 ---
+KAFKA_HOME="/home/jewfu/kafka_2.13-3.0.0" 
+ZK_HOST="localhost:2181"
+KAFKA_HOST="localhost:9092"
+
+echo "=========================================="
+echo "      Kafka 环境健康状态自检"
+echo "=========================================="
+
+# 1. 检查进程是否存在
+echo "[1/4] 检查进程状态..."
+ZK_PID=$(pgrep -f "zookeeper")
+KAFKA_PID=$(pgrep -f "kafka")
+
+if [ -z "$ZK_PID" ]; then
+    echo "❌ 错误: Zookeeper 未运行！"
+else
+    echo "✅ Zookeeper 正在运行 (PID: $ZK_PID)"
+fi
+
+if [ -z "$KAFKA_PID" ]; then
+    echo "❌ 错误: Kafka 未运行！"
+else
+    echo "✅ Kafka 正在运行 (PID: $KAFKA_PID)"
+fi
+
+# 2. 检查端口连通性
+echo -e "\n[2/4] 检查端口监听..."
+nc -z localhost 2181 && echo "✅ 2181 (ZK) 端口已开启" || echo "❌ 2181 端口不通"
+nc -z localhost 9092 && echo "✅ 9092 (Kafka) 端口已开启" || echo "❌ 9092 端口不通"
+
+# 3. 查看 Broker 列表（通过 ZK）
+echo -e "\n[3/4] 查看活跃 Broker 列表..."
+$KAFKA_HOME/bin/zookeeper-shell.sh $ZK_HOST ls /brokers/ids 2>/dev/null | tail -n 1
+
+# 4. 列出当前所有 Topic
+echo -e "\n[4/4] 现有 Topic 列表:"
+$KAFKA_HOME/bin/kafka-topics.sh --bootstrap-server $KAFKA_HOST --list
+
+echo "=========================================="
+2. 环境变量自检脚本 (env_debug.sh)
+这个脚本用于排查为什么在本地 sh 执行时会报错（比如找不到 java 或 mvn）。你可以把它作为你业务脚本的“前置检查器”。
+
+Bash
+#!/bin/bash
+
+# 建议：在你的业务脚本开头加入以下逻辑
+DEBUG_LOG="env_check.txt"
+
+echo "--- 调试信息开始时间: $(date) ---" > $DEBUG_LOG
+
+# 1. 导出所有环境变量
+echo "[环境快照]" >> $DEBUG_LOG
+env | sort >> $DEBUG_LOG
+
+# 2. 专门检查几个关键变量
+echo -e "\n[核心路径检查]" >> $DEBUG_LOG
+echo "JAVA_HOME: $JAVA_HOME" >> $DEBUG_LOG
+echo "PATH: $PATH" >> $DEBUG_LOG
+echo "Current Directory: $(pwd)" >> $DEBUG_LOG
+
+# 3. 检查关键命令是否可执行
+echo -e "\n[命令定位检查]" >> $DEBUG_LOG
+which java >> $DEBUG_LOG 2>&1
+java -version >> $DEBUG_LOG 2>&1
+which mvn >> $DEBUG_LOG 2>&1
+
+echo "--- 调试信息结束 ---" >> $DEBUG_LOG
+
+echo "环境变量快照已生成在: $DEBUG_LOG"
+echo "请对比该文件中的 PATH 是否包含你 .profile 中定义的路径。"
+🚀 实战排查建议：如何利用这两个脚本
+解决“路径不通”问题：
+当你运行 sh 脚本报错“command not found”时，查看 env_check.txt。如果里面没有 /home/jewfu/.sdkman/candidates/java/current/bin，说明你的 sh 脚本没有加载环境变量。
+
+对策：在你的业务脚本第二行加入 source ~/.bashrc 或 source ~/.profile。
+
+解决“Kafka 连接失败”问题：
+
+如果你的 Java 程序报 Connection Refused，先跑 check_kafka.sh。
+
+如果端口 9092 没开，说明 Kafka 挂了。
+
+如果端口开了但程序连不上，请检查 server.properties 里的 listeners 是不是写成了 PLAINTEXT://localhost:9092。
+
+手工分步测试的技巧：
+
+Step A: 运行 check_kafka.sh 确保环境 OK。
+
+Step B: 开启一个终端执行：kafka-console-consumer.sh --topic 电文Topic --from-beginning。
+
+Step C: 运行你的业务程序或手动发送电文。
+
+Step D: 如果消费者终端跳出了数据，但数据库没动静，立刻去查 PSQL 的 pg_stat_activity 或者开启 iBatis 的 DEBUG 日志。
+
+
+---------------------------------
+
+
+
+
+
+
