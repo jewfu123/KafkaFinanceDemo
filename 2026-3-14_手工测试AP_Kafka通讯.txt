@@ -1,3 +1,17 @@
+start kafka and zookeeper by hand in mac os and windows.
+
+For Linux / macOS (using bash scripts)
+Service 	Command
+ZooKeeper	bin/zookeeper-server-start.sh config/zookeeper.properties
+Kafka Server	bin/kafka-server-start.sh config/server.properties
+For Windows (using batch scripts)
+Service 	Command
+ZooKeeper	.\bin\windows\zookeeper-server-start.bat .\config\zookeeper.properties
+Kafka Server	.\bin\windows\kafka-server-start.bat .\config\server.properties
+
+-----------------------
+
+
 一、 如何捕捉“消失”的 Bean 构建错误
 在 Spring 框架中，如果 Bean 构建失败导致启动崩溃，日志通常会被打印在 System.err 或者被某些底层的 NoClassDefFoundError 掩盖。
 
