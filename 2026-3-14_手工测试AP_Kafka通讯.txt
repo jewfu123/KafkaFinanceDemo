@@ -1,8 +1,9 @@
-指定了具体路径：
+Springboot 配置文件，指定了具体log路径：
 
 Properties
 logging.file.name=C:/logs/myapp.log
 
+-------------------
 start kafka and zookeeper by hand in mac os and windows.
 
 For Linux / macOS (using bash scripts)
