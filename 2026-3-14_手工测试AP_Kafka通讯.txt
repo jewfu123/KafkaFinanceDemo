@@ -1,3 +1,8 @@
+指定了具体路径：
+
+Properties
+logging.file.name=C:/logs/myapp.log
+
 start kafka and zookeeper by hand in mac os and windows.
 
 For Linux / macOS (using bash scripts)
